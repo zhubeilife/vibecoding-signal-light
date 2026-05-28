@@ -4,11 +4,13 @@ from __future__ import annotations
 
 import json
 import os
+import shlex
 import signal
 import subprocess
 import sys
 import time
 from contextlib import contextmanager
+from hashlib import sha256
 from pathlib import Path
 from typing import Iterator
 
@@ -17,8 +19,11 @@ from signal_light.hardware import LightMapping, SignalLight, SignalLightError
 
 
 STATE_DIR = Path(os.environ.get("SIGNAL_LIGHT_STATE_DIR", "/private/tmp/signal-light"))
+PROJECT_ROOT = Path(__file__).resolve().parents[1]
 PID_FILE = STATE_DIR / "worker.json"
 LOG_FILE = STATE_DIR / "worker.log"
+NOTICE_PID_FILE = STATE_DIR / "notice-worker.json"
+NOTICE_LOG_FILE = STATE_DIR / "notice-worker.log"
 SESSION_FILE = STATE_DIR / "sessions.json"
 LOCK_FILE = STATE_DIR / "state.lock"
 SESSION_TTL_SECONDS = int(os.environ.get("SIGNAL_LIGHT_SESSION_TTL_SECONDS", "86400"))
@@ -26,12 +31,30 @@ SESSION_TTL_SECONDS = int(os.environ.get("SIGNAL_LIGHT_SESSION_TTL_SECONDS", "86
 RED_SIGNALS = {"permission", "blocked"}
 YELLOW_SIGNALS = {"attention", "done"}
 WORKING_SIGNALS = {"thinking", "working", "tool_done"}
-SESSION_END_SIGNALS = {"session_end", "off"}
+SESSION_END_SIGNALS = {"session_end"}
+# Explicit clears should not look like session-completion cues.
+SESSION_CLEAR_SIGNALS = {"off"}
+SESSION_END_NOTICE_SIGNAL = "session_done"
 TURN_END_SIGNALS = {"turn_end"}
+REPEATING_WORKER_SIGNALS = {name for name, agent_signal in SIGNALS.items() if agent_signal.repeat}
 
 
 def apply_signal(signal: AgentSignal, *, speed: float = 1.0) -> None:
     """Apply a signal as the current persistent status."""
+    stop_notice_worker()
+    if signal.repeat:
+        if _worker_matches(signal.name):
+            return
+        stop_worker()
+        start_worker(signal.name, speed=speed)
+        return
+
+    stop_worker()
+    _play_with_retries(signal, speed=speed)
+
+
+def apply_signal_now(signal: AgentSignal, *, speed: float = 1.0) -> None:
+    """Apply a signal without stopping any in-flight notice worker."""
     if signal.repeat:
         if _worker_matches(signal.name):
             return
@@ -50,8 +73,12 @@ def apply_session_signal(session_key: str, signal_name: str, *, speed: float = 1
         sessions = state.setdefault("sessions", {})
         now = time.time()
         _prune_sessions(sessions, now)
+        should_show_session_end_notice = False
 
         if signal_name in SESSION_END_SIGNALS:
+            should_show_session_end_notice = session_key in sessions
+            sessions.pop(session_key, None)
+        elif signal_name in SESSION_CLEAR_SIGNALS:
             sessions.pop(session_key, None)
         elif signal_name in TURN_END_SIGNALS:
             current = sessions.get(session_key)
@@ -66,8 +93,31 @@ def apply_session_signal(session_key: str, signal_name: str, *, speed: float = 1
 
         aggregate = aggregate_sessions(sessions)
         _write_session_state(state)
-        apply_signal(SIGNALS[aggregate], speed=speed)
+        if should_show_session_end_notice:
+            apply_session_end_notice(aggregate, speed=speed)
+        else:
+            apply_signal(SIGNALS[aggregate], speed=speed)
         return aggregate
+
+
+def apply_session_end_notice(aggregate: str, *, speed: float = 1.0) -> None:
+    """Briefly acknowledge a completed session, then restore the aggregate state."""
+    if aggregate in RED_SIGNALS or aggregate in YELLOW_SIGNALS:
+        apply_signal(SIGNALS[aggregate], speed=speed)
+        return
+
+    start_notice_worker(speed=speed)
+
+
+def start_notice_worker(*, speed: float = 1.0) -> None:
+    stop_notice_worker()
+    _spawn_worker_process(
+        signal_name=SESSION_END_NOTICE_SIGNAL,
+        speed=speed,
+        pid_file=NOTICE_PID_FILE,
+        log_file=NOTICE_LOG_FILE,
+        verify_startup=False,
+    )
 
 
 def clear_session_state() -> None:
@@ -94,6 +144,11 @@ def aggregate_sessions(sessions: dict[str, object]) -> str:
 
 
 def read_session_snapshot() -> dict[str, object]:
+    with _state_lock():
+        return _read_session_snapshot_unlocked()
+
+
+def _read_session_snapshot_unlocked() -> dict[str, object]:
     state = _read_session_state()
     sessions = state.get("sessions", {})
     if not isinstance(sessions, dict):
@@ -108,6 +163,9 @@ def read_session_snapshot() -> dict[str, object]:
 
 
 def run_worker(signal_name: str, *, speed: float = 1.0) -> int:
+    if signal_name == SESSION_END_NOTICE_SIGNAL:
+        return run_session_end_notice_worker(speed=speed)
+
     signal_to_run = SIGNALS[signal_name]
     if not signal_to_run.repeat:
         raise SignalLightError(f"Signal {signal_name} is not a repeating signal.")
@@ -115,6 +173,29 @@ def run_worker(signal_name: str, *, speed: float = 1.0) -> int:
     with SignalLight(LightMapping.from_env(os.environ)) as light:
         signal_to_run.play_forever(light, speed=speed)
     return 0
+
+
+def run_session_end_notice_worker(*, speed: float = 1.0) -> int:
+    notice_signal = SIGNALS[SESSION_END_NOTICE_SIGNAL]
+    try:
+        stop_worker()
+        try:
+            with SignalLight(LightMapping.from_env(os.environ)) as light:
+                notice_signal.play(light, speed=speed)
+        finally:
+            _restore_session_end_notice(speed=speed)
+        return 0
+    finally:
+        _clear_worker_pid_file(NOTICE_PID_FILE, expected_pid=os.getpid())
+
+
+def _restore_session_end_notice(*, speed: float) -> None:
+    with _state_lock():
+        if not _worker_pid_matches(NOTICE_PID_FILE, os.getpid()):
+            return
+
+        aggregate = _read_session_snapshot_unlocked()["aggregate"]
+        apply_signal_now(SIGNALS[aggregate], speed=speed)
 
 
 @contextmanager
@@ -166,50 +247,27 @@ def _prune_sessions(sessions: dict[str, object], now: float) -> None:
 
 
 def start_worker(signal_name: str, *, speed: float = 1.0) -> None:
-    STATE_DIR.mkdir(parents=True, exist_ok=True)
-    command = [
-        sys.executable,
-        "-m",
-        "signal_light",
-        "worker",
-        signal_name,
-        "--speed",
-        str(speed),
-    ]
-    log = LOG_FILE.open("ab")
-    try:
-        process = subprocess.Popen(
-            command,
-            stdin=subprocess.DEVNULL,
-            stdout=log,
-            stderr=log,
-            cwd=Path(__file__).resolve().parents[1],
-            env=os.environ.copy(),
-            start_new_session=True,
-        )
-    finally:
-        log.close()
-
-    time.sleep(0.2)
-    if process.poll() is not None:
-        raise SignalLightError(_worker_error_message(signal_name))
-
-    PID_FILE.write_text(
-        json.dumps(
-            {
-                "pid": process.pid,
-                "signal": signal_name,
-                "started_at": time.time(),
-            },
-            ensure_ascii=False,
-        )
+    _spawn_worker_process(
+        signal_name=signal_name,
+        speed=speed,
+        pid_file=PID_FILE,
+        log_file=LOG_FILE,
+        verify_startup=True,
     )
 
 
+def stop_notice_worker() -> None:
+    _stop_worker_process(pid_file=NOTICE_PID_FILE, orphan_signal_names={SESSION_END_NOTICE_SIGNAL})
+
+
 def _worker_matches(signal_name: str) -> bool:
-    state = _read_worker_state()
+    state = _read_worker_state(PID_FILE)
     pid = state.get("pid")
     return state.get("signal") == signal_name and isinstance(pid, int) and _is_running(pid)
+
+
+def _worker_pid_matches(pid_file: Path, expected_pid: int) -> bool:
+    return _read_worker_state(pid_file).get("pid") == expected_pid
 
 
 def _play_with_retries(signal: AgentSignal, *, speed: float) -> None:
@@ -226,10 +284,65 @@ def _play_with_retries(signal: AgentSignal, *, speed: float) -> None:
     raise last_error or SignalLightError("Failed to apply signal state.")
 
 
-def _worker_error_message(signal_name: str) -> str:
+def _spawn_worker_process(
+    *,
+    signal_name: str,
+    speed: float,
+    pid_file: Path,
+    log_file: Path,
+    verify_startup: bool = True,
+) -> None:
+    STATE_DIR.mkdir(parents=True, exist_ok=True)
+    command = [
+        sys.executable,
+        "-m",
+        "signal_light",
+        "worker",
+        "--owner-token",
+        _worker_owner_token(),
+        signal_name,
+        "--speed",
+        str(speed),
+    ]
+    log = log_file.open("ab")
+    try:
+        process = subprocess.Popen(
+            command,
+            stdin=subprocess.DEVNULL,
+            stdout=log,
+            stderr=log,
+            cwd=Path(__file__).resolve().parents[1],
+            env=os.environ.copy(),
+            start_new_session=True,
+        )
+    finally:
+        log.close()
+
+    pid_file.write_text(
+        json.dumps(
+            {
+                "pid": process.pid,
+                "signal": signal_name,
+                "owner_token": _worker_owner_token(),
+                "started_at": time.time(),
+            },
+            ensure_ascii=False,
+        )
+    )
+
+    if not verify_startup:
+        return
+
+    time.sleep(0.2)
+    if process.poll() is not None:
+        _clear_worker_pid_file(pid_file, expected_pid=process.pid)
+        raise SignalLightError(_worker_error_message(signal_name, log_file))
+
+
+def _worker_error_message(signal_name: str, log_file: Path) -> str:
     detail = ""
     try:
-        detail = LOG_FILE.read_text(errors="replace").strip().splitlines()[-1]
+        detail = log_file.read_text(errors="replace").strip().splitlines()[-1]
     except (FileNotFoundError, IndexError):
         pass
 
@@ -239,22 +352,125 @@ def _worker_error_message(signal_name: str) -> str:
 
 
 def stop_worker() -> None:
-    state = _read_worker_state()
+    _stop_worker_process(pid_file=PID_FILE, orphan_signal_names=REPEATING_WORKER_SIGNALS)
+
+
+def _stop_worker_process(*, pid_file: Path, orphan_signal_names: set[str]) -> None:
+    state = _read_worker_state(pid_file)
     pid = state.get("pid")
+    stopped_pids: set[int] = set()
     if isinstance(pid, int) and pid > 0 and pid != os.getpid():
         _terminate(pid)
+        stopped_pids.add(pid)
+
+    for orphan_pid in _find_worker_pids(orphan_signal_names):
+        if orphan_pid not in stopped_pids and orphan_pid != os.getpid():
+            _terminate(orphan_pid)
+
+    _clear_worker_pid_file(pid_file)
+
+
+def _clear_worker_pid_file(pid_file: Path, *, expected_pid: int | None = None) -> None:
+    if expected_pid is not None:
+        state = _read_worker_state(pid_file)
+        if state.get("pid") != expected_pid:
+            return
 
     try:
-        PID_FILE.unlink()
+        pid_file.unlink()
     except FileNotFoundError:
         pass
 
 
-def _read_worker_state() -> dict[str, object]:
+def _read_worker_state(pid_file: Path) -> dict[str, object]:
     try:
-        return json.loads(PID_FILE.read_text())
+        return json.loads(pid_file.read_text())
     except (FileNotFoundError, json.JSONDecodeError):
         return {}
+
+
+def _find_worker_pids(signal_names: set[str]) -> list[int]:
+    try:
+        result = subprocess.run(
+            ["ps", "-axo", "pid=,command="],
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+    except OSError:
+        return []
+
+    if result.returncode != 0:
+        return []
+
+    pids: list[int] = []
+    for line in result.stdout.splitlines():
+        stripped = line.strip()
+        if not stripped:
+            continue
+        parts = stripped.split(None, 1)
+        if len(parts) != 2:
+            continue
+        pid_text, command = parts
+        try:
+            pid = int(pid_text)
+        except ValueError:
+            continue
+
+        if pid != os.getpid() and _is_worker_command(command, signal_names):
+            pids.append(pid)
+
+    return pids
+
+
+def _is_worker_command(command: str, signal_names: set[str]) -> bool:
+    try:
+        parts = shlex.split(command)
+    except ValueError:
+        parts = command.split()
+
+    for index in range(len(parts) - 2):
+        if parts[index : index + 3] != ["-m", "signal_light", "worker"]:
+            continue
+
+        worker_args = parts[index + 3 :]
+        if _option_value(worker_args, "--owner-token") != _worker_owner_token():
+            continue
+
+        if _worker_signal_from_args(worker_args) in signal_names:
+            return True
+    return False
+
+
+def _worker_owner_token() -> str:
+    identity = f"{PROJECT_ROOT}|{STATE_DIR.expanduser().resolve()}"
+    return sha256(identity.encode("utf-8")).hexdigest()[:16]
+
+
+def _option_value(args: list[str], option: str) -> str | None:
+    prefix = f"{option}="
+    for index, arg in enumerate(args):
+        if arg == option and index + 1 < len(args):
+            return args[index + 1]
+        if arg.startswith(prefix):
+            return arg.removeprefix(prefix)
+    return None
+
+
+def _worker_signal_from_args(args: list[str]) -> str | None:
+    skip_next = False
+    for arg in args:
+        if skip_next:
+            skip_next = False
+            continue
+        if arg in {"--owner-token", "--speed"}:
+            skip_next = True
+            continue
+        if arg.startswith("--owner-token=") or arg.startswith("--speed="):
+            continue
+        if not arg.startswith("-"):
+            return arg
+    return None
 
 
 def _terminate(pid: int) -> None:

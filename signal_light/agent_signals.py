@@ -116,6 +116,13 @@ def _flash(green: bool = False, yellow: bool = False, red: bool = False) -> tupl
     )
 
 
+def _notice_flash(green: bool = False, yellow: bool = False, red: bool = False) -> tuple[Frame, Frame]:
+    return (
+        Frame(green=green, yellow=yellow, red=red, seconds=0.18),
+        Frame(seconds=0.14),
+    )
+
+
 def _soft_pulse(green: bool = False, yellow: bool = False, red: bool = False) -> tuple[Frame, ...]:
     return tuple(
         Frame(green=green, yellow=yellow, red=red, seconds=0.16, brightness=level)
@@ -201,10 +208,17 @@ SIGNALS: dict[str, AgentSignal] = {
     ),
     "session_end": AgentSignal(
         name="session_end",
-        summary="Codex 会话结束，回到空闲状态。",
+        summary="Codex 会话结束，回到当前聚合状态。",
         attention="不需要关注。",
         frames=_state(green=True)[0],
         leave_on=_state(green=True)[1],
+    ),
+    "session_done": AgentSignal(
+        name="session_done",
+        summary="一个 Agent 会话结束。",
+        attention="不用处理。",
+        frames=_notice_flash(green=True),
+        loops=6,
     ),
     "off": AgentSignal(
         name="off",

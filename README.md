@@ -243,7 +243,7 @@ Recommended hook mapping:
 | `PostToolUse` | Working cycle |
 | `PermissionRequest` | Red flashing |
 | `Stop` | Clear normal working state |
-| `SessionEnd` | Green idle |
+| `SessionEnd` | Brief green completion blink, then current aggregate state |
 
 See [docs/LAMP_LANGUAGE.md](docs/LAMP_LANGUAGE.md) for a complete `~/.codex/hooks.json` example.
 
@@ -266,7 +266,7 @@ Codex hook 可以直接把事件名传给 wrapper：
 | `PostToolUse` | 工作循环 |
 | `PermissionRequest` | 红灯闪烁 |
 | `Stop` | 清理普通工作态 |
-| `SessionEnd` | 绿灯空闲 |
+| `SessionEnd` | 绿灯短闪提示完成，然后恢复当前聚合状态 |
 
 完整 `~/.codex/hooks.json` 示例见 [docs/LAMP_LANGUAGE.md](docs/LAMP_LANGUAGE.md)。
 
@@ -292,7 +292,7 @@ Supported Claude Code events include:
 | `Notification` | Yellow flashing |
 | `PermissionRequest` | Red flashing |
 | `Stop` | Clear normal working state |
-| `SessionEnd` | Green idle |
+| `SessionEnd` | Brief green completion blink, then current aggregate state |
 
 Claude Code 会通过 stdin 传入 JSON hook 数据，因此 wrapper 通常不需要额外参数：
 
@@ -314,7 +314,7 @@ echo '{"event":"Notification","session_id":"demo"}' | ./scripts/claude-code-sign
 | `Notification` | 黄灯闪烁 |
 | `PermissionRequest` | 红灯闪烁 |
 | `Stop` | 清理普通工作态 |
-| `SessionEnd` | 绿灯空闲 |
+| `SessionEnd` | 绿灯短闪提示完成，然后恢复当前聚合状态 |
 
 See [docs/LAMP_LANGUAGE.md](docs/LAMP_LANGUAGE.md) for a complete `~/.claude/settings.json` example.
 
@@ -330,6 +330,8 @@ red flashing > yellow flashing > working cycle > steady green
 
 That means one session waiting for permission will stay red even if another session starts working. A normal `Stop` only clears non-urgent working state; it does not erase an existing red alert.
 
+When one tracked session ends while other sessions are still running, the runtime briefly flashes green as a completion cue, then restores the current aggregate state. If all sessions have ended, it settles on steady green. Red or yellow alerts are not interrupted by this completion cue.
+
 运行时会记录每个 Agent 会话的最新状态，并把最高优先级状态显示到真实信号灯上：
 
 ```text
@@ -337,6 +339,8 @@ That means one session waiting for permission will stay red even if another sess
 ```
 
 因此，一个会话正在等待权限时，即使另一个会话开始工作，红灯也不会被覆盖。普通 `Stop` 只会清掉非紧急的工作态，不会误清除已有红灯告警。
+
+当某个已记录的会话结束、但其它会话还在运行时，运行时会让绿灯短暂闪烁，提示“有一个会话完成了”，然后恢复当前聚合状态。如果所有会话都结束了，最终会回到绿灯常亮。红灯或黄灯告警不会被这个完成提示打断。
 
 ## Project Status / 项目状态
 

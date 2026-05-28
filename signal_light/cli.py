@@ -10,7 +10,14 @@ from typing import Sequence
 
 from signal_light.agent_signals import SIGNALS, AgentSignal, Frame
 from signal_light.hardware import LightMapping, SignalLight, SignalLightError
-from signal_light.runtime import apply_session_signal, apply_signal, clear_session_state, read_session_snapshot, run_worker
+from signal_light.runtime import (
+    SESSION_END_NOTICE_SIGNAL,
+    apply_session_signal,
+    apply_signal,
+    clear_session_state,
+    read_session_snapshot,
+    run_worker,
+)
 
 
 HOOK_CONTROL_SIGNALS = {"turn_end"}
@@ -54,7 +61,13 @@ def build_parser() -> argparse.ArgumentParser:
     cc_hook.add_argument("--dry-run", action="store_true", help="print GPIO states instead of touching hardware")
 
     worker = subparsers.add_parser("worker", help=argparse.SUPPRESS)
-    worker.add_argument("signal", choices=sorted(name for name, signal in SIGNALS.items() if signal.repeat))
+    worker.add_argument(
+        "signal",
+        choices=sorted(
+            name for name, signal in SIGNALS.items() if signal.repeat or name == SESSION_END_NOTICE_SIGNAL
+        ),
+    )
+    worker.add_argument("--owner-token", help=argparse.SUPPRESS)
     worker.add_argument("--speed", type=float, default=1.0)
 
     test = subparsers.add_parser("test", help="run a quick red/yellow/green hardware test")

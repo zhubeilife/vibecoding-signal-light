@@ -2,7 +2,7 @@
 
 This project uses a three-light traffic signal model as an ambient status display for Codex or other AI agents.
 
-The language is deliberately small: the current light must always describe the current state. There are no important startup animations and no "blink first, meaning later" patterns. If Codex is working or needs you, the pattern keeps running until another Codex event changes the state.
+The language is deliberately small: the current light must always describe the current state. There are no important startup animations and no "blink first, meaning later" patterns. If Codex is working or needs you, the pattern keeps running until another Codex event changes the state. The one transient cue is session completion: a short green blink can acknowledge that one session ended, then the light returns to the current aggregate state.
 
 ## Status Semantics
 
@@ -31,7 +31,8 @@ The CLI still exposes named signals so hooks and other agents can use stable wor
 | `permission` | flashing red | Codex requests permission |
 | `blocked` | flashing red | Agent cannot continue without intervention |
 | `session_start` | steady green | Codex session started and is idle |
-| `session_end` | steady green | Codex session ended and returned to idle |
+| `session_end` | brief green completion blink, then aggregate state | Codex session ended |
+| `session_done` | brief green blink | Internal completion cue for one ended session |
 | `off` | off | Clear all lights |
 
 ## Codex Hook Mapping
@@ -44,7 +45,7 @@ The CLI still exposes named signals so hooks and other agents can use stable wor
 | `PostToolUse` | `tool_done` | slow green-yellow-red cycle |
 | `PermissionRequest` | `permission` | flashing red |
 | `Stop` | `turn_end` | clears non-urgent session state |
-| `SessionEnd` | `session_end` | steady green |
+| `SessionEnd` | `session_end` | brief green completion blink, then aggregate state |
 
 `turn_end` is a hook-only control state. It is not a public lamp pattern: it removes that session's non-urgent working state, while leaving any existing `permission` or `blocked` red alert intact.
 
@@ -61,6 +62,8 @@ flashing red > flashing yellow > green-yellow-red work cycle > steady green
 ```
 
 For example, if one Codex session is waiting for permission and another session starts working, the light stays flashing red. If one session is waiting for you to read a result and another session is working, the light stays flashing yellow.
+
+When a tracked session ends, the runtime briefly flashes green to make the completion visible. After that cue, it recomputes the aggregate: if other sessions are still working, the green-yellow-red cycle resumes; if no sessions remain, the light settles on steady green. Red and yellow alerts stay higher priority, so the green completion cue does not interrupt an active permission, blocked, attention, or done state.
 
 ## Wiring Defaults
 
@@ -123,7 +126,7 @@ The wrapper scripts avoid writing `__pycache__` files in the repository. By defa
 | `PermissionRequest` | `permission` | flashing red |
 | `Notification` | `attention` | flashing yellow |
 | `Stop` | `turn_end` | clears non-urgent session state |
-| `SessionEnd` | `session_end` | steady green |
+| `SessionEnd` | `session_end` | brief green completion blink, then aggregate state |
 
 If `Stop` carries a `stop_reason` of `max_tokens` or `error`, the adapter uses `blocked` instead of clearing state.
 
