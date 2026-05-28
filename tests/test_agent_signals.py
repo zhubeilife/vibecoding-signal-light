@@ -405,7 +405,8 @@ def test_run_session_end_notice_worker_restores_latest_aggregate(monkeypatch) ->
     monkeypatch.setattr(runtime, "SignalLight", FakeSignalLight)
     monkeypatch.setattr(runtime.LightMapping, "from_env", lambda _env: object())
     monkeypatch.setattr(runtime, "stop_worker", lambda: calls.append("stop-worker"))
-    monkeypatch.setattr(runtime, "read_session_snapshot", lambda: {"aggregate": "working", "sessions": {}})
+    monkeypatch.setattr(runtime, "_worker_pid_matches", lambda pid_file, expected_pid: True)
+    monkeypatch.setattr(runtime, "_read_session_snapshot_unlocked", lambda: {"aggregate": "working", "sessions": {}})
     monkeypatch.setattr(runtime, "apply_signal_now", lambda signal, speed=1.0: calls.append(f"restore:{signal.name}"))
     monkeypatch.setattr(runtime.os, "getpid", lambda: 12345)
     monkeypatch.setattr(
@@ -445,7 +446,8 @@ def test_run_session_end_notice_worker_restores_aggregate_after_notice_failure(m
     monkeypatch.setattr(runtime, "SignalLight", FailingSignalLight)
     monkeypatch.setattr(runtime.LightMapping, "from_env", lambda _env: object())
     monkeypatch.setattr(runtime, "stop_worker", lambda: calls.append("stop-worker"))
-    monkeypatch.setattr(runtime, "read_session_snapshot", lambda: {"aggregate": "working", "sessions": {}})
+    monkeypatch.setattr(runtime, "_worker_pid_matches", lambda pid_file, expected_pid: True)
+    monkeypatch.setattr(runtime, "_read_session_snapshot_unlocked", lambda: {"aggregate": "working", "sessions": {}})
     monkeypatch.setattr(runtime, "apply_signal_now", lambda signal, speed=1.0: calls.append(f"restore:{signal.name}"))
     monkeypatch.setattr(runtime, "_clear_worker_pid_file", lambda pid_file, expected_pid=None: calls.append("clear-notice"))
 
@@ -455,6 +457,17 @@ def test_run_session_end_notice_worker_restores_aggregate_after_notice_failure(m
     assert "stop-worker" in calls
     assert "restore:working" in calls
     assert calls[-1] == "clear-notice"
+
+
+def test_session_end_notice_skip_restore_when_notice_pid_was_replaced(monkeypatch) -> None:
+    calls: list[str] = []
+    monkeypatch.setattr(runtime, "_worker_pid_matches", lambda pid_file, expected_pid: False)
+    monkeypatch.setattr(runtime, "_read_session_snapshot_unlocked", lambda: calls.append("read-snapshot"))
+    monkeypatch.setattr(runtime, "apply_signal_now", lambda signal, speed=1.0: calls.append(f"restore:{signal.name}"))
+
+    runtime._restore_session_end_notice(speed=0.05)
+
+    assert calls == []
 
 
 def test_clear_worker_pid_file_keeps_newer_pid_file(tmp_path) -> None:

@@ -4,13 +4,13 @@ from __future__ import annotations
 
 import json
 import os
-import signal
 import shlex
+import signal
 import subprocess
 import sys
 import time
-from hashlib import sha256
 from contextlib import contextmanager
+from hashlib import sha256
 from pathlib import Path
 from typing import Iterator
 
@@ -32,6 +32,7 @@ RED_SIGNALS = {"permission", "blocked"}
 YELLOW_SIGNALS = {"attention", "done"}
 WORKING_SIGNALS = {"thinking", "working", "tool_done"}
 SESSION_END_SIGNALS = {"session_end"}
+# Explicit clears should not look like session-completion cues.
 SESSION_CLEAR_SIGNALS = {"off"}
 SESSION_END_NOTICE_SIGNAL = "session_done"
 TURN_END_SIGNALS = {"turn_end"}
@@ -144,17 +145,21 @@ def aggregate_sessions(sessions: dict[str, object]) -> str:
 
 def read_session_snapshot() -> dict[str, object]:
     with _state_lock():
-        state = _read_session_state()
-        sessions = state.get("sessions", {})
-        if not isinstance(sessions, dict):
-            sessions = {}
-        now = time.time()
-        _prune_sessions(sessions, now)
-        aggregate = aggregate_sessions(sessions)
-        return {
-            "aggregate": aggregate,
-            "sessions": sessions,
-        }
+        return _read_session_snapshot_unlocked()
+
+
+def _read_session_snapshot_unlocked() -> dict[str, object]:
+    state = _read_session_state()
+    sessions = state.get("sessions", {})
+    if not isinstance(sessions, dict):
+        sessions = {}
+    now = time.time()
+    _prune_sessions(sessions, now)
+    aggregate = aggregate_sessions(sessions)
+    return {
+        "aggregate": aggregate,
+        "sessions": sessions,
+    }
 
 
 def run_worker(signal_name: str, *, speed: float = 1.0) -> int:
@@ -178,11 +183,19 @@ def run_session_end_notice_worker(*, speed: float = 1.0) -> int:
             with SignalLight(LightMapping.from_env(os.environ)) as light:
                 notice_signal.play(light, speed=speed)
         finally:
-            aggregate = read_session_snapshot()["aggregate"]
-            apply_signal_now(SIGNALS[aggregate], speed=speed)
+            _restore_session_end_notice(speed=speed)
         return 0
     finally:
         _clear_worker_pid_file(NOTICE_PID_FILE, expected_pid=os.getpid())
+
+
+def _restore_session_end_notice(*, speed: float) -> None:
+    with _state_lock():
+        if not _worker_pid_matches(NOTICE_PID_FILE, os.getpid()):
+            return
+
+        aggregate = _read_session_snapshot_unlocked()["aggregate"]
+        apply_signal_now(SIGNALS[aggregate], speed=speed)
 
 
 @contextmanager
@@ -251,6 +264,10 @@ def _worker_matches(signal_name: str) -> bool:
     state = _read_worker_state(PID_FILE)
     pid = state.get("pid")
     return state.get("signal") == signal_name and isinstance(pid, int) and _is_running(pid)
+
+
+def _worker_pid_matches(pid_file: Path, expected_pid: int) -> bool:
+    return _read_worker_state(pid_file).get("pid") == expected_pid
 
 
 def _play_with_retries(signal: AgentSignal, *, speed: float) -> None:
@@ -391,7 +408,10 @@ def _find_worker_pids(signal_names: set[str]) -> list[int]:
         stripped = line.strip()
         if not stripped:
             continue
-        pid_text, _, command = stripped.partition(" ")
+        parts = stripped.split(None, 1)
+        if len(parts) != 2:
+            continue
+        pid_text, command = parts
         try:
             pid = int(pid_text)
         except ValueError:
