@@ -28,14 +28,16 @@ SESSION_FILE = STATE_DIR / "sessions.json"
 LOCK_FILE = STATE_DIR / "state.lock"
 SESSION_TTL_SECONDS = int(os.environ.get("SIGNAL_LIGHT_SESSION_TTL_SECONDS", "86400"))
 
-RED_SIGNALS = {"permission", "blocked"}
-YELLOW_SIGNALS = {"attention", "done"}
+RED_SIGNALS = {"blocked"}
+YELLOW_SIGNALS = {"permission", "attention", "done"}
 WORKING_SIGNALS = {"thinking", "working", "tool_done"}
 SESSION_END_SIGNALS = {"session_end"}
 # Explicit clears should not look like session-completion cues.
 SESSION_CLEAR_SIGNALS = {"off"}
 SESSION_END_NOTICE_SIGNAL = "session_done"
 TURN_END_SIGNALS = {"turn_end"}
+# Sessions still waiting for user action should survive turn_end.
+TURN_END_KEEP_SIGNALS = {"permission", "blocked"}
 REPEATING_WORKER_SIGNALS = {name for name, agent_signal in SIGNALS.items() if agent_signal.repeat}
 
 
@@ -83,7 +85,8 @@ def apply_session_signal(session_key: str, signal_name: str, *, speed: float = 1
         elif signal_name in TURN_END_SIGNALS:
             current = sessions.get(session_key)
             current_signal = current.get("signal") if isinstance(current, dict) else None
-            if current_signal not in RED_SIGNALS:
+            if current_signal not in TURN_END_KEEP_SIGNALS:
+                should_show_session_end_notice = session_key in sessions
                 sessions.pop(session_key, None)
         else:
             sessions[session_key] = {
@@ -135,6 +138,8 @@ def aggregate_sessions(sessions: dict[str, object]) -> str:
                 signals.append(signal_name)
 
     if any(signal_name in RED_SIGNALS for signal_name in signals):
+        return "blocked"
+    if any(signal_name == "permission" for signal_name in signals):
         return "permission"
     if any(signal_name in YELLOW_SIGNALS for signal_name in signals):
         return "attention"

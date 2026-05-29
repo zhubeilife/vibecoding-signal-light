@@ -179,7 +179,7 @@ SIGNALS: dict[str, AgentSignal] = {
         name="permission",
         summary="Codex 请求授权或需要你明确批准。",
         attention="需要立即关注。",
-        frames=_flash(red=True),
+        frames=_flash(yellow=True),
         loops=12,
         repeat=True,
     ),
