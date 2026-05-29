@@ -1,10 +1,13 @@
 import io
+import json
+from pathlib import Path
 
 import pytest
 
 from signal_light.agent_signals import SIGNALS
 from signal_light import cli
 from signal_light.codex_hook import CodexHookInput, choose_signal, session_key
+from signal_light import hook_installer
 from signal_light import runtime
 from signal_light.runtime import aggregate_sessions, apply_session_signal
 
@@ -524,6 +527,198 @@ def test_cli_worker_accepts_session_done_signal(monkeypatch) -> None:
     assert cli.main(["worker", "session_done", "--speed", "0.5"]) == 0
 
     assert calls == [("session_done", 0.5)]
+
+
+def test_supported_agents_exposes_codex_and_claude_code(tmp_path) -> None:
+    agents = hook_installer.supported_agents(home=tmp_path)
+
+    assert set(agents) == {"codex", "claude-code"}
+    assert agents["codex"].config_path == tmp_path / ".codex" / "hooks.json"
+    assert agents["claude-code"].config_path == tmp_path / ".claude" / "settings.json"
+
+
+def test_inspect_agent_marks_missing_config_as_needing_install(tmp_path) -> None:
+    spec = hook_installer.supported_agents(home=tmp_path)["codex"]
+
+    status = hook_installer.inspect_agent(spec)
+
+    assert not status.installed
+    assert status.message == "config missing"
+
+
+def test_install_agent_writes_codex_hooks_and_backups_existing_file(tmp_path) -> None:
+    spec = hook_installer.supported_agents(home=tmp_path)["codex"]
+    spec.config_path.parent.mkdir(parents=True, exist_ok=True)
+    existing_hook = {"hooks": [{"type": "command", "command": "echo keep-me", "timeout": 1}]}
+    spec.config_path.write_text(json.dumps({"hooks": {"Stop": [existing_hook]}}, indent=2))
+
+    result = hook_installer.install_agent(spec)
+
+    assert result.status.installed
+    assert result.backup_path is not None
+    data = json.loads(spec.config_path.read_text())
+    assert set(data["hooks"]) == {"SessionStart", "UserPromptSubmit", "PreToolUse", "PostToolUse", "PermissionRequest", "Stop", "SessionEnd"}
+    assert existing_hook in data["hooks"]["Stop"]
+
+
+def test_install_agent_replaces_existing_signal_light_hooks_but_keeps_other_hooks(tmp_path) -> None:
+    spec = hook_installer.supported_agents(home=tmp_path)["claude-code"]
+    spec.config_path.parent.mkdir(parents=True, exist_ok=True)
+    existing = {
+        "hooks": {
+            "Stop": [
+                {
+                    "hooks": [
+                        {
+                            "type": "command",
+                            "command": str(hook_installer.CLAUDE_CODE_HOOK_SCRIPT),
+                            "timeout": 1,
+                        }
+                    ],
+                    "matcher": "",
+                },
+                {
+                    "hooks": [{"type": "command", "command": "echo keep-me", "timeout": 1}],
+                    "matcher": "",
+                },
+            ]
+        }
+    }
+    spec.config_path.write_text(json.dumps(existing, indent=2))
+
+    hook_installer.install_agent(spec)
+
+    data = json.loads(spec.config_path.read_text())
+    stop_groups = data["hooks"]["Stop"]
+    assert len(stop_groups) == 2
+    assert stop_groups[0]["hooks"][0]["command"] == str(hook_installer.CLAUDE_CODE_HOOK_SCRIPT)
+    assert stop_groups[0]["hooks"][0]["timeout"] == 5
+    assert stop_groups[1]["hooks"][0]["command"] == "echo keep-me"
+
+
+def test_install_agent_preserves_existing_hook_order_when_repairing(tmp_path) -> None:
+    spec = hook_installer.supported_agents(home=tmp_path)["claude-code"]
+    spec.config_path.parent.mkdir(parents=True, exist_ok=True)
+    existing = {
+        "hooks": {
+            "Stop": [
+                {
+                    "hooks": [
+                        {"type": "command", "command": "echo before", "timeout": 1},
+                        {
+                            "type": "command",
+                            "command": str(hook_installer.CLAUDE_CODE_HOOK_SCRIPT),
+                            "timeout": 1,
+                        },
+                        {"type": "command", "command": "echo after", "timeout": 1},
+                    ],
+                    "matcher": "",
+                }
+            ]
+        }
+    }
+    spec.config_path.write_text(json.dumps(existing, indent=2))
+
+    hook_installer.install_agent(spec)
+
+    data = json.loads(spec.config_path.read_text())
+    hooks = data["hooks"]["Stop"][0]["hooks"]
+    assert [hook["command"] for hook in hooks] == [
+        "echo before",
+        str(hook_installer.CLAUDE_CODE_HOOK_SCRIPT),
+        "echo after",
+    ]
+    assert hooks[1]["timeout"] == 5
+
+
+def test_inspect_agent_marks_wrong_timeout_as_broken(tmp_path) -> None:
+    spec = hook_installer.supported_agents(home=tmp_path)["codex"]
+    spec.config_path.parent.mkdir(parents=True, exist_ok=True)
+    hook_command = f"{hook_installer.CODEX_HOOK_SCRIPT} PermissionRequest"
+    spec.config_path.write_text(
+        json.dumps(
+            {
+                "hooks": {
+                    event: [
+                        {
+                            "hooks": [
+                                {
+                                    "type": "command",
+                                    "command": f"{hook_installer.CODEX_HOOK_SCRIPT} {event}",
+                                    "timeout": 5,
+                                }
+                            ]
+                        }
+                    ]
+                    for event in hook_installer.CODEX_EVENTS
+                }
+            },
+            indent=2,
+        )
+    )
+    data = json.loads(spec.config_path.read_text())
+    data["hooks"]["PermissionRequest"][0]["hooks"][0]["command"] = hook_command
+    data["hooks"]["PermissionRequest"][0]["hooks"][0]["timeout"] = 5
+    spec.config_path.write_text(json.dumps(data, indent=2))
+
+    status = hook_installer.inspect_agent(spec)
+
+    assert not status.installed
+    assert status.broken_events == ("PermissionRequest",)
+
+
+def test_hook_command_quotes_paths_with_spaces() -> None:
+    spec = hook_installer.AgentSpec(
+        key="codex",
+        name="Codex",
+        config_path=Path("/tmp/unused.json"),
+        hook_script=Path("/tmp/signal light/scripts/codex-signal-hook"),
+        events={},
+        passes_event_arg=True,
+    )
+
+    command = hook_installer._hook_command(spec, "Stop")
+
+    assert command == "'/tmp/signal light/scripts/codex-signal-hook' Stop"
+
+
+def test_install_wizard_selects_missing_agents_by_default(tmp_path, monkeypatch) -> None:
+    codex_spec = hook_installer.supported_agents(home=tmp_path)["codex"]
+    claude_spec = hook_installer.supported_agents(home=tmp_path)["claude-code"]
+    codex_spec.config_path.parent.mkdir(parents=True, exist_ok=True)
+    codex_spec.config_path.write_text(json.dumps({"hooks": {}}, indent=2))
+
+    written: list[str] = []
+    monkeypatch.setattr(hook_installer, "install_agent", lambda spec, backup=True: written.append(spec.key) or hook_installer.InstallResult(status=hook_installer.inspect_agent(spec), changed=True, backup_path=None))
+
+    stdin = io.StringIO("\n")
+    stdout = io.StringIO()
+    assert hook_installer.run_install_wizard(stdin=stdin, stdout=stdout, home=tmp_path, yes=True) == 0
+
+    assert written == ["codex", "claude-code"]
+    assert "Signal Light hook installer" in stdout.getvalue()
+
+
+def test_install_wizard_supports_explicit_agent_selection(tmp_path, monkeypatch) -> None:
+    selected: list[str] = []
+    monkeypatch.setattr(
+        hook_installer,
+        "install_agent",
+        lambda spec, backup=True: selected.append(spec.key) or hook_installer.InstallResult(status=hook_installer.inspect_agent(spec), changed=True, backup_path=None),
+    )
+
+    assert hook_installer.run_install_wizard(selected_agents=["codex"], home=tmp_path, yes=True) == 0
+
+    assert selected == ["codex"]
+
+
+def test_install_hooks_cli_invokes_wizard(monkeypatch) -> None:
+    calls: list[dict[str, object]] = []
+    monkeypatch.setattr(hook_installer, "run_install_wizard", lambda **kwargs: calls.append(kwargs) or 0)
+
+    assert cli.main(["install-hooks", "--agent", "codex", "--dry-run"]) == 0
+
+    assert calls == [{"selected_agents": ["codex"], "all_agents": False, "yes": False, "dry_run": True}]
 
 
 def test_apply_session_signal_clears_non_urgent_session_on_turn_end(tmp_path, monkeypatch) -> None:

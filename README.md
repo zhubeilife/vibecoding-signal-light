@@ -224,6 +224,26 @@ export SIGNAL_LIGHT_USE_UV=1
 
 ## Codex Integration / Codex 集成
 
+The easiest way to install or repair local hooks is the built-in wizard:
+
+```bash
+./scripts/install-hooks
+./scripts/install-hooks --all -y
+./scripts/install-hooks --agent codex --agent claude-code -y
+```
+
+The wizard detects supported local agents, validates the current hook files, creates timestamped backups, and installs only the Signal Light hook entries while keeping other hooks on the same events.
+
+安装或修复本地 hook 最简单的方式是内置向导：
+
+```bash
+./scripts/install-hooks
+./scripts/install-hooks --all -y
+./scripts/install-hooks --agent codex --agent claude-code -y
+```
+
+向导会识别已支持的本地 Agent，检查当前 hook 文件，写入前创建带时间戳的备份，并且只安装 Signal Light 自己的 hook 条目，保留同一事件下已有的其它 hook。
+
 Codex hooks can call the wrapper with the event name:
 
 ```bash

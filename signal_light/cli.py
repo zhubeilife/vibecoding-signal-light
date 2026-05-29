@@ -50,6 +50,17 @@ def build_parser() -> argparse.ArgumentParser:
     subparsers.add_parser("list", help="list available lamp-language signals")
     subparsers.add_parser("status", help="show aggregated Codex session signal state")
 
+    install_hooks = subparsers.add_parser("install-hooks", help="install or repair local agent hooks")
+    install_hooks.add_argument(
+        "--agent",
+        action="append",
+        dest="agents",
+        help="agent to install: codex or claude-code; can be passed more than once",
+    )
+    install_hooks.add_argument("--all", action="store_true", help="install or repair all supported agents")
+    install_hooks.add_argument("-y", "--yes", action="store_true", help="accept the suggested selection")
+    install_hooks.add_argument("--dry-run", action="store_true", help="show planned changes without writing files")
+
     hook = subparsers.add_parser("codex-hook", help="read a Codex hook event and play the matching signal")
     hook.add_argument("event", nargs="?", help="Codex hook event name, for example Stop or PermissionRequest")
     hook.add_argument("--event", dest="event_option", help="Codex hook event name")
@@ -84,6 +95,19 @@ def main(argv: Sequence[str] | None = None) -> int:
         return list_signals()
     if args.command == "play":
         return play_signal(args.signal, dry_run=args.dry_run, speed=args.speed, quiet=args.quiet)
+    if args.command == "install-hooks":
+        from signal_light.hook_installer import run_install_wizard
+
+        try:
+            return run_install_wizard(
+                selected_agents=args.agents,
+                all_agents=args.all,
+                yes=args.yes,
+                dry_run=args.dry_run,
+            )
+        except ValueError as exc:
+            print(str(exc), file=sys.stderr)
+            return 2
     if args.command == "codex-hook":
         event = args.event_option or args.event
         from signal_light.codex_hook import choose_signal, read_codex_hook_input, session_key
