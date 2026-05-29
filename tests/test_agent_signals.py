@@ -748,6 +748,26 @@ def test_apply_session_signal_clears_non_urgent_session_on_turn_end(tmp_path, mo
     assert notices == [1.0]
 
 
+def test_session_done_notice_fires_when_other_sessions_still_working(tmp_path, monkeypatch) -> None:
+    applied: list[str] = []
+    notices: list[float] = []
+    monkeypatch.setattr(runtime, "STATE_DIR", tmp_path)
+    monkeypatch.setattr(runtime, "SESSION_FILE", tmp_path / "sessions.json")
+    monkeypatch.setattr(runtime, "LOCK_FILE", tmp_path / "state.lock")
+    monkeypatch.setattr(runtime, "apply_signal", lambda signal, speed=1.0: applied.append(signal.name))
+    monkeypatch.setattr(runtime, "start_notice_worker", lambda speed=1.0: notices.append(speed))
+
+    assert apply_session_signal("session-a", "working") == "working"
+    assert apply_session_signal("session-b", "working") == "working"
+    assert apply_session_signal("session-b", "turn_end") == "working"
+
+    snapshot = runtime.read_session_snapshot()
+    assert "session-a" in snapshot["sessions"]
+    assert "session-b" not in snapshot["sessions"]
+    assert applied == ["working", "working"]
+    assert notices == [1.0]
+
+
 def test_apply_session_signal_keeps_permission_on_turn_end(tmp_path, monkeypatch) -> None:
     applied: list[str] = []
     monkeypatch.setattr(runtime, "STATE_DIR", tmp_path)

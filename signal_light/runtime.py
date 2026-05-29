@@ -36,6 +36,7 @@ SESSION_END_SIGNALS = {"session_end"}
 SESSION_CLEAR_SIGNALS = {"off"}
 SESSION_END_NOTICE_SIGNAL = "session_done"
 TURN_END_SIGNALS = {"turn_end"}
+# Sessions still waiting for user action should survive turn_end.
 TURN_END_KEEP_SIGNALS = {"permission", "blocked"}
 REPEATING_WORKER_SIGNALS = {name for name, agent_signal in SIGNALS.items() if agent_signal.repeat}
 
