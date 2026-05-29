@@ -24,9 +24,12 @@ PID_FILE = STATE_DIR / "worker.json"
 LOG_FILE = STATE_DIR / "worker.log"
 NOTICE_PID_FILE = STATE_DIR / "notice-worker.json"
 NOTICE_LOG_FILE = STATE_DIR / "notice-worker.log"
+SLEEP_PID_FILE = STATE_DIR / "sleep-worker.json"
+SLEEP_LOG_FILE = STATE_DIR / "sleep-worker.log"
 SESSION_FILE = STATE_DIR / "sessions.json"
 LOCK_FILE = STATE_DIR / "state.lock"
 SESSION_TTL_SECONDS = int(os.environ.get("SIGNAL_LIGHT_SESSION_TTL_SECONDS", "86400"))
+IDLE_SLEEP_SECONDS = int(os.environ.get("SIGNAL_LIGHT_IDLE_SLEEP_SECONDS", "600"))
 
 RED_SIGNALS = {"blocked"}
 YELLOW_SIGNALS = {"permission", "attention", "done"}
@@ -35,6 +38,7 @@ SESSION_END_SIGNALS = {"session_end"}
 # Explicit clears should not look like session-completion cues.
 SESSION_CLEAR_SIGNALS = {"off"}
 SESSION_END_NOTICE_SIGNAL = "session_done"
+IDLE_SLEEP_SIGNAL = "idle_sleep"
 TURN_END_SIGNALS = {"turn_end"}
 # Sessions still waiting for user action should survive turn_end.
 TURN_END_KEEP_SIGNALS = {"permission", "blocked"}
@@ -44,6 +48,7 @@ REPEATING_WORKER_SIGNALS = {name for name, agent_signal in SIGNALS.items() if ag
 def apply_signal(signal: AgentSignal, *, speed: float = 1.0) -> None:
     """Apply a signal as the current persistent status."""
     stop_notice_worker()
+    stop_sleep_worker()
     if signal.repeat:
         if _worker_matches(signal.name):
             return
@@ -53,10 +58,13 @@ def apply_signal(signal: AgentSignal, *, speed: float = 1.0) -> None:
 
     stop_worker()
     _play_with_retries(signal, speed=speed)
+    if signal.name == "idle":
+        start_sleep_worker()
 
 
 def apply_signal_now(signal: AgentSignal, *, speed: float = 1.0) -> None:
     """Apply a signal without stopping any in-flight notice worker."""
+    stop_sleep_worker()
     if signal.repeat:
         if _worker_matches(signal.name):
             return
@@ -66,6 +74,8 @@ def apply_signal_now(signal: AgentSignal, *, speed: float = 1.0) -> None:
 
     stop_worker()
     _play_with_retries(signal, speed=speed)
+    if signal.name == "idle":
+        start_sleep_worker()
 
 
 def apply_session_signal(session_key: str, signal_name: str, *, speed: float = 1.0) -> str:
@@ -123,6 +133,38 @@ def start_notice_worker(*, speed: float = 1.0) -> None:
     )
 
 
+def start_sleep_worker() -> None:
+    stop_sleep_worker()
+    _spawn_worker_process(
+        signal_name=IDLE_SLEEP_SIGNAL,
+        speed=1.0,
+        pid_file=SLEEP_PID_FILE,
+        log_file=SLEEP_LOG_FILE,
+        verify_startup=False,
+    )
+
+
+def stop_sleep_worker() -> None:
+    _stop_worker_process(pid_file=SLEEP_PID_FILE, orphan_signal_names={IDLE_SLEEP_SIGNAL})
+
+
+def run_idle_sleep_worker() -> int:
+    """Wait for IDLE_SLEEP_SECONDS, then turn off the lights if still idle."""
+    try:
+        time.sleep(IDLE_SLEEP_SECONDS)
+        with _state_lock():
+            if not _worker_pid_matches(SLEEP_PID_FILE, os.getpid()):
+                return 0
+            snapshot = _read_session_snapshot_unlocked()
+            if snapshot["aggregate"] != "idle":
+                return 0
+            stop_worker()
+            _play_with_retries(SIGNALS["off"], speed=1.0)
+        return 0
+    finally:
+        _clear_worker_pid_file(SLEEP_PID_FILE, expected_pid=os.getpid())
+
+
 def clear_session_state() -> None:
     """Clear all tracked Codex session states."""
     with _state_lock():
@@ -170,6 +212,8 @@ def _read_session_snapshot_unlocked() -> dict[str, object]:
 def run_worker(signal_name: str, *, speed: float = 1.0) -> int:
     if signal_name == SESSION_END_NOTICE_SIGNAL:
         return run_session_end_notice_worker(speed=speed)
+    if signal_name == IDLE_SLEEP_SIGNAL:
+        return run_idle_sleep_worker()
 
     signal_to_run = SIGNALS[signal_name]
     if not signal_to_run.repeat:
