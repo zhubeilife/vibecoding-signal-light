@@ -689,7 +689,14 @@ def test_install_wizard_selects_missing_agents_by_default(tmp_path, monkeypatch)
     codex_spec.config_path.write_text(json.dumps({"hooks": {}}, indent=2))
 
     written: list[str] = []
-    monkeypatch.setattr(hook_installer, "install_agent", lambda spec, backup=True: written.append(spec.key) or hook_installer.InstallResult(status=hook_installer.inspect_agent(spec), changed=True, backup_path=None))
+
+    def fake_install(spec, backup=True):
+        written.append(spec.key)
+        return hook_installer.InstallResult(
+            status=hook_installer.inspect_agent(spec), changed=True, backup_path=None
+        )
+
+    monkeypatch.setattr(hook_installer, "install_agent", fake_install)
 
     stdin = io.StringIO("\n")
     stdout = io.StringIO()
@@ -701,11 +708,14 @@ def test_install_wizard_selects_missing_agents_by_default(tmp_path, monkeypatch)
 
 def test_install_wizard_supports_explicit_agent_selection(tmp_path, monkeypatch) -> None:
     selected: list[str] = []
-    monkeypatch.setattr(
-        hook_installer,
-        "install_agent",
-        lambda spec, backup=True: selected.append(spec.key) or hook_installer.InstallResult(status=hook_installer.inspect_agent(spec), changed=True, backup_path=None),
-    )
+
+    def fake_install(spec, backup=True):
+        selected.append(spec.key)
+        return hook_installer.InstallResult(
+            status=hook_installer.inspect_agent(spec), changed=True, backup_path=None
+        )
+
+    monkeypatch.setattr(hook_installer, "install_agent", fake_install)
 
     assert hook_installer.run_install_wizard(selected_agents=["codex"], home=tmp_path, yes=True) == 0
 
