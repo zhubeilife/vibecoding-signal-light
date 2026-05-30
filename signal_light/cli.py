@@ -11,6 +11,7 @@ from typing import Sequence
 from signal_light.agent_signals import SIGNALS, AgentSignal, Frame
 from signal_light.hardware import LightMapping, SignalLight, SignalLightError
 from signal_light.runtime import (
+    IDLE_SLEEP_SIGNAL,
     SESSION_END_NOTICE_SIGNAL,
     apply_session_signal,
     apply_signal,
@@ -75,7 +76,11 @@ def build_parser() -> argparse.ArgumentParser:
     worker.add_argument(
         "signal",
         choices=sorted(
-            name for name, signal in SIGNALS.items() if signal.repeat or name == SESSION_END_NOTICE_SIGNAL
+            {
+                *(name for name, signal in SIGNALS.items() if signal.repeat),
+                SESSION_END_NOTICE_SIGNAL,
+                IDLE_SLEEP_SIGNAL,
+            }
         ),
     )
     worker.add_argument("--owner-token", help=argparse.SUPPRESS)
