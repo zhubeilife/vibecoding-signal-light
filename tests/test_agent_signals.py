@@ -530,6 +530,15 @@ def test_cli_worker_accepts_session_done_signal(monkeypatch) -> None:
     assert calls == [("session_done", 0.5)]
 
 
+def test_cli_worker_accepts_idle_sleep_signal(monkeypatch) -> None:
+    calls: list[tuple[str, float]] = []
+    monkeypatch.setattr(cli, "run_worker", lambda signal_name, speed=1.0: calls.append((signal_name, speed)) or 0)
+
+    assert cli.main(["worker", "idle_sleep", "--speed", "1.0"]) == 0
+
+    assert calls == [("idle_sleep", 1.0)]
+
+
 def test_supported_agents_exposes_codex_and_claude_code(tmp_path) -> None:
     agents = hook_installer.supported_agents(home=tmp_path)
 
