@@ -12,6 +12,7 @@ from signal_light.agent_signals import SIGNALS, AgentSignal, Frame
 from signal_light.hardware import LightMapping, SignalLight, SignalLightError
 from signal_light.runtime import (
     IDLE_SLEEP_SIGNAL,
+    REPEATING_WORKER_SIGNALS,
     SESSION_END_NOTICE_SIGNAL,
     apply_session_signal,
     apply_signal,
@@ -75,13 +76,7 @@ def build_parser() -> argparse.ArgumentParser:
     worker = subparsers.add_parser("worker", help=argparse.SUPPRESS)
     worker.add_argument(
         "signal",
-        choices=sorted(
-            {
-                *(name for name, signal in SIGNALS.items() if signal.repeat),
-                SESSION_END_NOTICE_SIGNAL,
-                IDLE_SLEEP_SIGNAL,
-            }
-        ),
+        choices=sorted(REPEATING_WORKER_SIGNALS | {SESSION_END_NOTICE_SIGNAL, IDLE_SLEEP_SIGNAL}),
     )
     worker.add_argument("--owner-token", help=argparse.SUPPRESS)
     worker.add_argument("--speed", type=float, default=1.0)
