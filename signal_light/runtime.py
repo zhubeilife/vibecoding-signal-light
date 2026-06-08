@@ -18,7 +18,15 @@ from signal_light.agent_signals import AgentSignal, SIGNALS
 from signal_light.hardware import LightMapping, SignalLight, SignalLightError
 
 
-STATE_DIR = Path(os.environ.get("SIGNAL_LIGHT_STATE_DIR", "/private/tmp/signal-light"))
+def _default_state_dir() -> Path:
+    if override := os.environ.get("SIGNAL_LIGHT_STATE_DIR"):
+        return Path(override)
+    # /private/tmp is macOS-specific; fall back to /tmp on other POSIX systems
+    base = Path("/private/tmp") if Path("/private/tmp").exists() else Path("/tmp")
+    return base / "signal-light"
+
+
+STATE_DIR = _default_state_dir()
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 PID_FILE = STATE_DIR / "worker.json"
 LOG_FILE = STATE_DIR / "worker.log"
