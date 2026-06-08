@@ -250,17 +250,18 @@ def _restore_session_end_notice(*, speed: float) -> None:
 @contextmanager
 def _state_lock() -> Iterator[None]:
     STATE_DIR.mkdir(parents=True, exist_ok=True)
-    with LOCK_FILE.open("a+") as lock_file:
-        try:
-            import fcntl
+    try:
+        import fcntl as _fcntl
+    except ImportError:
+        yield
+        return
 
-            fcntl.flock(lock_file, fcntl.LOCK_EX)
+    with LOCK_FILE.open("a+") as lock_file:
+        _fcntl.flock(lock_file, _fcntl.LOCK_EX)
+        try:
             yield
         finally:
-            try:
-                fcntl.flock(lock_file, fcntl.LOCK_UN)
-            except Exception:
-                pass
+            _fcntl.flock(lock_file, _fcntl.LOCK_UN)
 
 
 def _read_session_state() -> dict[str, object]:
