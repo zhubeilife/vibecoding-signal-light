@@ -490,7 +490,7 @@ def _is_worker_command(command: str, signal_names: set[str]) -> bool:
     try:
         parts = shlex.split(command)
     except ValueError:
-        parts = command.split()
+        return False
 
     for index in range(len(parts) - 2):
         if parts[index : index + 3] != ["-m", "signal_light", "worker"]:
