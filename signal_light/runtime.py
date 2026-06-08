@@ -393,7 +393,7 @@ def _spawn_worker_process(
     if not verify_startup:
         return
 
-    time.sleep(0.2)
+    time.sleep(1.5)
     if process.poll() is not None:
         _clear_worker_pid_file(pid_file, expected_pid=process.pid)
         raise SignalLightError(_worker_error_message(signal_name, log_file))
@@ -402,12 +402,13 @@ def _spawn_worker_process(
 def _worker_error_message(signal_name: str, log_file: Path) -> str:
     detail = ""
     try:
-        detail = log_file.read_text(errors="replace").strip().splitlines()[-1]
+        lines = log_file.read_text(errors="replace").strip().splitlines()
+        detail = "\n".join(lines[-5:])
     except (FileNotFoundError, IndexError):
         pass
 
     if detail:
-        return f"Signal worker for {signal_name} exited immediately: {detail}"
+        return f"Signal worker for {signal_name} exited immediately:\n{detail}"
     return f"Signal worker for {signal_name} exited immediately."
 
 
