@@ -180,6 +180,43 @@ The work cycle avoids software PWM on plain GPIO hardware, because USB GPIO timi
 - 支持无硬件 dry-run 预览。
 - 支持通过环境变量调整 GPIO 接线。
 
+## Linux Support / Linux 支持
+
+The project works on Linux with two extra steps.
+
+本项目可在 Linux 上运行，需要额外处理以下两点。
+
+**1. State directory / 状态目录**
+
+The default state directory `/private/tmp/signal-light` is macOS-only. Set this before running any command:
+
+默认状态目录 `/private/tmp/signal-light` 是 macOS 专有路径，运行前需设置：
+
+```bash
+export SIGNAL_LIGHT_STATE_DIR=/tmp/signal-light
+```
+
+Add it to your `~/.bashrc` or `~/.profile` to make it permanent.
+
+建议写入 `~/.bashrc` 或 `~/.profile` 使其持久生效。
+
+**2. MCP2221A USB permissions / MCP2221A USB 权限**
+
+On Linux, non-root users need a udev rule to access the USB device:
+
+Linux 上非 root 用户默认无法访问 USB 设备，需要添加 udev 规则：
+
+```bash
+echo 'SUBSYSTEM=="usb", ATTR{idVendor}=="04d8", ATTR{idProduct}=="00dd", MODE="0666", GROUP="plugdev"' | sudo tee /etc/udev/rules.d/99-mcp2221.rules
+sudo udevadm control --reload-rules && sudo udevadm trigger
+sudo usermod -aG plugdev $USER
+# Re-login to apply group change / 重新登录后生效
+```
+
+Everything else — Claude Code hooks, Codex hooks, dry-run mode, and the `~/.claude/settings.json` path — works the same as on macOS.
+
+其余部分（Claude Code hook、Codex hook、dry-run 模式、`~/.claude/settings.json` 路径）与 macOS 完全一致，无需额外处理。
+
 ## Quick Start / 快速开始
 
 Install dependencies with your preferred Python workflow. With `uv`:
