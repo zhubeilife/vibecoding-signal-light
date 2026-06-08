@@ -28,6 +28,10 @@ class Frame:
     seconds: float = 0.2
     brightness: float = 1.0
 
+    def __post_init__(self) -> None:
+        if not (0.0 <= self.brightness <= 1.0):
+            raise ValueError(f"Frame brightness must be in [0.0, 1.0], got {self.brightness}")
+
 
 @dataclass(frozen=True)
 class AgentSignal:
