@@ -279,7 +279,9 @@ def _read_session_state() -> dict[str, object]:
 
 def _write_session_state(state: dict[str, object]) -> None:
     STATE_DIR.mkdir(parents=True, exist_ok=True)
-    SESSION_FILE.write_text(json.dumps(state, ensure_ascii=False, indent=2) + "\n")
+    tmp = SESSION_FILE.with_suffix(".tmp")
+    tmp.write_text(json.dumps(state, ensure_ascii=False, indent=2) + "\n")
+    tmp.replace(SESSION_FILE)
 
 
 def _prune_sessions(sessions: dict[str, object], now: float) -> None:
